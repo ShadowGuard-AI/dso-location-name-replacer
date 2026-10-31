@@ -21,7 +21,7 @@ def setup_argparse():
     """
     Sets up the argument parser for the command-line interface.
     """
-    parser = argparse.ArgumentParser(description='Replaces specific location names with broader geographical categories.')
+    parser = argparse.ArgumentParser(description='Normalizes generic location type words by default (Street, Ave, Road, Rd, Blvd become Road; City, Town become Region). Specific names such as street names and city names are replaced only when they are supplied in a custom mappings file (--mappings).')
     parser.add_argument('input_file', type=str, help='Path to the input file.')
     parser.add_argument('output_file', type=str, help='Path to the output file.')
     parser.add_argument('--mappings', type=str, help='Path to a custom location mappings file (JSON format).', default=None)  # Allow custom mappings
@@ -57,13 +57,13 @@ def load_location_mappings(mappings_file):
         return mappings
     except FileNotFoundError:
         logging.error(f"Mappings file not found: {mappings_file}")
-        return DEFAULT_LOCATION_MAPPINGS
+        sys.exit(1)
     except json.JSONDecodeError:
         logging.error(f"Invalid JSON format in mappings file: {mappings_file}")
-        return DEFAULT_LOCATION_MAPPINGS
+        sys.exit(1)
     except Exception as e:
         logging.error(f"Error loading mappings: {e}")
-        return DEFAULT_LOCATION_MAPPINGS
+        sys.exit(1)
 
 
 
@@ -71,13 +71,15 @@ def replace_location_names(text, location_mappings):
     """
     Replaces location names in the text with broader categories using regex.
     """
+    total = 0
     try:
         for pattern, replacement in location_mappings.items():
-            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
-        return text
+            text, count = re.subn(pattern, replacement, text, flags=re.IGNORECASE)
+            total += count
+        return text, total
     except Exception as e:
         logging.error(f"Error replacing location names: {e}")
-        return text  # Return original text in case of error
+        return text, 0  # Return original text in case of error
 
 def process_file(input_file, output_file, location_mappings):
     """
@@ -85,16 +87,30 @@ def process_file(input_file, output_file, location_mappings):
     """
     try:
         encoding = detect_encoding(input_file)
-        with open(input_file, 'r', encoding=encoding) as infile, open(output_file, 'w', encoding=encoding) as outfile:
-            for line in infile:
-                sanitized_line = replace_location_names(line, location_mappings)
-                outfile.write(sanitized_line)
-        logging.info(f"Successfully processed file: {input_file} and saved to: {output_file}")
+        # Read the whole input before any output is opened, so an output
+        # path that reaches the input can never truncate it mid read.
+        with open(input_file, 'r', encoding=encoding) as infile:
+            lines = infile.readlines()
+        total = 0
+        sanitized_lines = []
+        for line in lines:
+            sanitized_line, count = replace_location_names(line, location_mappings)
+            total += count
+            sanitized_lines.append(sanitized_line)
+        if total == 0:
+            logging.error(f"Nothing was replaced in file: {input_file}; no output written.")
+            return False
+        with open(output_file, 'w', encoding=encoding) as outfile:
+            outfile.writelines(sanitized_lines)
+        logging.info(f"Successfully processed file: {input_file} and saved to: {output_file} ({total} replacement(s))")
+        return True
 
     except FileNotFoundError:
         logging.error(f"Input file not found: {input_file}")
+        return False
     except Exception as e:
         logging.error(f"Error processing file: {e}")
+        return False
 
 
 def main():
@@ -112,11 +128,17 @@ def main():
         logging.error(f"Input file does not exist: {args.input_file}")
         sys.exit(1)  # Exit with an error code
 
+    # Refuse in place runs: the output must not resolve to the input file.
+    if os.path.realpath(args.input_file) == os.path.realpath(args.output_file):
+        logging.error("Output file must differ from the input file; refusing to overwrite the input.")
+        sys.exit(1)
+
     # Load location mappings
     location_mappings = load_location_mappings(args.mappings)
 
     # Process the file
-    process_file(args.input_file, args.output_file, location_mappings)
+    if not process_file(args.input_file, args.output_file, location_mappings):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
@@ -124,7 +146,7 @@ if __name__ == "__main__":
 
 
 # Usage Examples:
-# 1.  Basic usage:  Replace default location names in input.txt and save to output.txt
+# 1.  Basic usage:  Normalize generic location type words in input.txt and save to output.txt
 #     python main.py input.txt output.txt
 
 # 2.  Using a custom mappings file:
