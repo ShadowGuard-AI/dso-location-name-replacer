@@ -49,7 +49,10 @@ def load_location_mappings(mappings_file):
     """
     if mappings_file is None:
         return DEFAULT_LOCATION_MAPPINGS  # Use default mappings if no file specified
-    
+    # A custom file replaces the defaults outright, it does not extend
+    # them: supply one pair and the Street to Road and City to Region
+    # normalization is gone from the run unless the file repeats it.
+
     import json  # Import here to avoid unnecessary import if not used
     try:
         with open(mappings_file, 'r') as f:
@@ -73,12 +76,25 @@ def replace_location_names(text, location_mappings):
     """
     total = 0
     try:
+        # Patterns apply in the order the mapping gives them, each over
+        # the output of the ones before, so replacement text is itself
+        # fair game for a later pattern: a custom pair that maps City to
+        # Town and Town to Region lands City at Region in one pass. The
+        # defaults are safe from that only because Road and Region appear
+        # in no later left hand side. Matching is case insensitive but the
+        # replacement is written exactly as configured, so STREET and
+        # street both come out as the one cased word Road.
         for pattern, replacement in location_mappings.items():
             text, count = re.subn(pattern, replacement, text, flags=re.IGNORECASE)
             total += count
         return text, total
     except Exception as e:
         logging.error(f"Error replacing location names: {e}")
+        # On error the partially worked text is returned with a count of
+        # zero, whatever earlier patterns already changed in it. The
+        # caller reads zero as nothing replaced and writes no output, so
+        # one bad pattern in a custom file, which is never named in the
+        # log, discards the whole run rather than just its own matches.
         return text, 0  # Return original text in case of error
 
 def process_file(input_file, output_file, location_mappings):
